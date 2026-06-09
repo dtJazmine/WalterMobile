@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "347301362281",
+    "project_id": "qr-based-real-time-monitoring",
+    "storage_bucket": "qr-based-real-time-monitoring.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:347301362281:android:733902ee5d0a17bce200f8",
+        "android_client_info": {
+          "package_name": "com.example.waltermobileapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAeO4noPtdDjUhXti_rHxsNDSS9WE4nFdQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
