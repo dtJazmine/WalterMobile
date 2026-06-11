@@ -174,10 +174,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       validator: (value) {
                         final trimmed = value?.trim() ?? '';
                         if (trimmed.isEmpty) return 'Contact number is required';
-                        if (!RegExp(r'^\d+$').hasMatch(trimmed))
+                        if (!RegExp(r'^\d+$').hasMatch(trimmed)) {
                           return 'Contact number must contain only digits';
-                        if (trimmed.length != 11)
+                        }
+                        if (trimmed.length != 11) {
                           return 'Contact number must be exactly 11 digits';
+                        }
                         return null;
                       },
                     ),
@@ -187,10 +189,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       label: 'Password',
                       obscureText: true,
                       validator: (value) {
-                        if (value == null || value.isEmpty)
+                        if (value == null || value.isEmpty) {
                           return 'Password is required';
-                        if (value.length < 6)
+                        }
+                        if (value.length < 6) {
                           return 'Password must be at least 6 characters';
+                        }
                         return null;
                       },
                     ),
@@ -200,10 +204,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       label: 'Confirm Password',
                       obscureText: true,
                       validator: (value) {
-                        if (value == null || value.isEmpty)
+                        if (value == null || value.isEmpty) {
                           return 'Please confirm your password';
-                        if (value != _passwordController.text)
+                        }
+                        if (value != _passwordController.text) {
                           return 'Passwords do not match';
+                        }
                         return null;
                       },
                     ),
@@ -221,8 +227,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       validator: (value) {
                         final trimmed = value?.trim() ?? '';
                         if (trimmed.isEmpty) return 'Recovery PIN is required';
-                        if (trimmed.length != 4)
+                        if (trimmed.length != 4) {
                           return 'PIN must be exactly 4 digits';
+                        }
                         return null;
                       },
                     ),

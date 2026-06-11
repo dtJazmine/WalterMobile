@@ -183,8 +183,9 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
                           _showNew,
                           () => setState(() => _showNew = !_showNew),
                           extraValidator: (value) {
-                            if (value != null && value.length < 6)
+                            if (value != null && value.length < 6) {
                               return 'Password must be at least 6 characters';
+                            }
                             return null;
                           },
                         ),
@@ -198,8 +199,9 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
                           () => setState(
                               () => _showConfirm = !_showConfirm),
                           extraValidator: (value) {
-                            if (value != _newController.text)
+                            if (value != _newController.text) {
                               return 'Passwords do not match';
+                            }
                             return null;
                           },
                         ),
@@ -250,8 +252,9 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
         ),
       ),
       validator: (value) {
-        if (value == null || value.trim().isEmpty)
+        if (value == null || value.trim().isEmpty) {
           return 'This field is required';
+        }
         return extraValidator?.call(value);
       },
     );

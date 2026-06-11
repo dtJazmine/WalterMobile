@@ -164,10 +164,12 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                           ],
                           validator: (value) {
                             final trimmed = value?.trim() ?? '';
-                            if (trimmed.isEmpty)
+                            if (trimmed.isEmpty) {
                               return 'Phone number is required';
-                            if (trimmed.length != 11)
+                            }
+                            if (trimmed.length != 11) {
                               return 'Phone number must be exactly 11 digits';
+                            }
                             return null;
                           },
                         ),
@@ -190,10 +192,12 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                             LengthLimitingTextInputFormatter(4),
                           ],
                           validator: (value) {
-                            if (value == null || value.trim().isEmpty)
+                            if (value == null || value.trim().isEmpty) {
                               return 'PIN is required';
-                            if (value.trim().length != 4)
+                            }
+                            if (value.trim().length != 4) {
                               return 'PIN must be 4 digits';
+                            }
                             return null;
                           },
                         ),

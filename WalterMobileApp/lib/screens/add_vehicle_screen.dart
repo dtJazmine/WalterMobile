@@ -62,16 +62,11 @@ class _AddVehicleScreenState extends State<AddVehicleScreen> {
   }
 
   Future<void> _save() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
+    final docRef = await _userDoc();
     final newPlate = _licenseController.text.trim().toUpperCase();
 
     if (newPlate.isNotEmpty) {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .update({
+      await docRef.update({
         'plateNumbers': FieldValue.arrayUnion([newPlate])
       });
       setState(() {
@@ -80,25 +75,18 @@ class _AddVehicleScreenState extends State<AddVehicleScreen> {
       });
       _showToast('Vehicle plate added.');
     } else {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .update({'plateNumbers': _registeredPlates});
+      await docRef.update({'plateNumbers': _registeredPlates});
     }
   }
 
   Future<void> _removePlate(String plate) async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
+    final docRef = await _userDoc();
 
     setState(() {
       _registeredPlates.remove(plate);
     });
 
-    await FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .update({'plateNumbers': _registeredPlates});
+    await docRef.update({'plateNumbers': _registeredPlates});
 
     _showToast('Vehicle plate removed.');
   }
@@ -177,8 +165,7 @@ class _AddVehicleScreenState extends State<AddVehicleScreen> {
 
   Widget _buildHeader() => Container(
         decoration: const BoxDecoration(color: Color(0xFF0D4A91)),
-        padding:
-            const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
         child: const Text(
           'Account Details | Vehicle Plate Number',
           style: TextStyle(
@@ -190,14 +177,12 @@ class _AddVehicleScreenState extends State<AddVehicleScreen> {
 
   Widget _sectionTitle(String text) => Text(
         text,
-        style:
-            const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
       );
 
   Widget _sectionSubtitle(String text) => Text(
         text,
-        style:
-            const TextStyle(fontSize: 12, color: Color(0xFF7A7D84)),
+        style: const TextStyle(fontSize: 12, color: Color(0xFF7A7D84)),
       );
 
   InputDecoration _inputDecoration(
@@ -243,8 +228,7 @@ class _AddVehicleScreenState extends State<AddVehicleScreen> {
                 ),
                 trailing: _registeredPlates.length > 1
                     ? TextButton(
-                        onPressed: () =>
-                            _removePlate(_registeredPlates[i]),
+                        onPressed: () => _removePlate(_registeredPlates[i]),
                         child: const Text(
                           'Remove',
                           style: TextStyle(

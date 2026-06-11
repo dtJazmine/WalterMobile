@@ -324,8 +324,9 @@ class _ChangePhoneScreenState extends State<ChangePhoneScreen> {
                             'Confirm New Phone Number',
                             extraValidator: (value) {
                               if (value?.trim() !=
-                                  _newPhoneController.text.trim())
+                                  _newPhoneController.text.trim()) {
                                 return 'Phone numbers do not match';
+                              }
                               return null;
                             },
                           ),
@@ -373,8 +374,9 @@ class _ChangePhoneScreenState extends State<ChangePhoneScreen> {
         ),
       ),
       validator: (value) {
-        if (value == null || value.trim().isEmpty)
+        if (value == null || value.trim().isEmpty) {
           return 'Password is required';
+        }
         return null;
       },
     );
