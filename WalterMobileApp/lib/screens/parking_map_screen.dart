@@ -1,12 +1,11 @@
 import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 import 'app_colors.dart';
 import 'parking_slot.dart';
 import 'parking_stall_tile.dart';
-import 'qr_generation_screen.dart';
-import '../firebase_db.dart';
+import 'qr_generation_screen.dart'; // for the shared FloatingQrButton
 
 /// Standalone screen wrapper. Use this only if you need to push the
 /// parking map as its own route with its own AppBar.
@@ -15,7 +14,7 @@ import '../firebase_db.dart';
 ///
 /// NOTE: when embedding [ParkingMapBody] inside another Scaffold
 /// (e.g. home_screen.dart), also add a [FloatingQrButton] to that
-/// Scaffold's `bottomNavigationBar` — see the bottom of this file
+/// Scaffold's `bottomNavigationBar` \u2014 see the bottom of this file
 /// for a ready-to-use helper. ParkingMapBody itself has no Scaffold,
 /// so it can't pin its own bottom bar; only the parent Scaffold can.
 class ParkingMapScreen extends StatelessWidget {
@@ -59,7 +58,7 @@ class ParkingMapScreen extends StatelessWidget {
   }
 }
 
-/// The live parking map content only — no Scaffold, no AppBar, and
+/// The live parking map content only \u2014 no Scaffold, no AppBar, and
 /// no Generate QR button. Designed to be dropped into another screen's
 /// body, e.g. home_screen.dart. The parent screen is responsible for
 /// adding its own FloatingQrButton to its Scaffold's bottomNavigationBar.
@@ -73,11 +72,6 @@ class ParkingMapBody extends StatefulWidget {
 class _ParkingMapBodyState extends State<ParkingMapBody> {
   String _selectedSection = 'front';
 
-  // Scroll controller + anchor key so tapping a zone card auto-scrolls
-  // the page down to the live slot grid, mimicking "go to the slots".
-  final ScrollController _scrollController = ScrollController();
-  final GlobalKey _gridSectionKey = GlobalKey();
-
   // Set once the user confirms they're parked in a specific slot.
   // Drives the top banner switching from "SUGGESTED FOR YOU" to
   // "CURRENT PARKING SLOT".
@@ -85,14 +79,9 @@ class _ParkingMapBodyState extends State<ParkingMapBody> {
 
   // The raw slot id (e.g. "F3") of the confirmed slot. Used to force
   // that specific tile to render as occupied + highlighted in the grid,
-  // regardless of what the live/static isOccupied status says.
+  // regardless of what the (currently static / eventually Firebase-fed)
+  // isOccupied flag on the underlying ParkingSlot says.
   String? _confirmedSlotId;
-
-  // The section key ("front"/"side"/"back") that _confirmedSlotId belongs
-  // to. Needed because the driver might switch to a different section's
-  // view before tapping a new slot, so we can't just assume "current
-  // section" when we need to free up the old slot.
-  String? _confirmedSectionKey;
 
   // True right after the user confirms they've left their slot. Drives
   // the banner to show a "THANK YOU" message briefly before it settles
@@ -102,149 +91,17 @@ class _ParkingMapBodyState extends State<ParkingMapBody> {
   // Auto-reverts the thank-you banner back to the default suggestion.
   Timer? _thankYouTimer;
 
-  // True while we're checking Firebase for a slot the current account
-  // already has reserved (e.g. right after login/app restart).
-  bool _restoringSlot = true;
-
-  // Live occupancy for every slot in every section, keyed by slot id
-  // (e.g. "F1", "S12", "B60"). Populated from a realtime listener on
-  // /slots in Firebase and kept up to date for as long as this screen
-  // is mounted. This is what makes the mobile map match the web
-  // dashboard — previously the grid only ever showed its static demo
-  // data (isOccupied: false for everything) except for the driver's
-  // own confirmed slot.
-  Map<String, bool> _liveOccupancy = {};
-
-  StreamSubscription<DatabaseEvent>? _slotsSubscription;
-
-  @override
-  void initState() {
-    super.initState();
-    _restoreConfirmedSlot();
-    _listenToSlots();
-  }
-
   @override
   void dispose() {
     _thankYouTimer?.cancel();
-    _scrollController.dispose();
-    _slotsSubscription?.cancel();
     super.dispose();
   }
 
-  /// Subscribes to /slots in Firebase Realtime Database and keeps
-  /// [_liveOccupancy] up to date. Expects the shape written by
-  /// [_writeSlotTransition] / [_writeSlotFree]: /slots/{sectionKey}/{slotId}/sensor
-  /// is either "occupied" or "vacant". Any slot not present in the
-  /// snapshot keeps falling back to its static isOccupied flag via
-  /// [_effectiveOccupied].
-  void _listenToSlots() {
-    _slotsSubscription = rtdb.ref('slots').onValue.listen((event) {
-      final raw = event.snapshot.value;
-
-      print("========== FIREBASE ==========");
-      print(raw);
-
-      if (!mounted) return;
-
-      if (raw == null) {
-        setState(() => _liveOccupancy = {});
-        return;
-      }
-
-      final occupancy = <String, bool>{};
-      final sectionsMap = Map<dynamic, dynamic>.from(raw as Map);
-
-      for (final sectionEntry in sectionsMap.entries) {
-        final slotsRaw = sectionEntry.value;
-        if (slotsRaw is! Map) continue;
-
-        final slotsMap = Map<dynamic, dynamic>.from(slotsRaw);
-
-        for (final slotEntry in slotsMap.entries) {
-          final slotId = slotEntry.key.toString();
-          final slotData = Map<dynamic, dynamic>.from(slotEntry.value);
-
-          occupancy[slotId] = slotData['sensor'] == 'occupied';
-
-          print("$slotId -> ${occupancy[slotId]}");
-        }
-      }
-
-      print("LIVE OCCUPANCY");
-      print(occupancy);
-
-      setState(() {
-        _liveOccupancy = occupancy;
-      });
-    });
-  }
-
-  /// Returns whether [slot] should currently render as occupied, live
-  /// Firebase data taking priority over the static demo flag baked into
-  /// [_sections]. This is the single source of truth used everywhere in
-  /// the UI (grid tiles, compass overview, stats) so nothing can drift
-  /// out of sync with what the database actually says.
-  bool _effectiveOccupied(ParkingSlot slot) {
-    return _liveOccupancy[slot.id] ?? slot.isOccupied;
-  }
-
-  /// Reads /user_slots/{uid} from Firebase and, if the account already
-  /// has a slot reserved, restores _confirmedSlotId/_confirmedSlotLabel/
-  /// _confirmedSectionKey from that — instead of trusting local widget
-  /// state, which resets to null on every relogin/app restart. This is
-  /// what keeps the app in sync with whatever the database (and the web
-  /// dashboard) actually says is occupied.
-  Future<void> _restoreConfirmedSlot() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) {
-      if (mounted) setState(() => _restoringSlot = false);
-      return;
-    }
-
-    try {
-      final snap =
-          await rtdb.ref('user_slots/$uid').get();
-
-      if (!mounted) return;
-
-      if (!snap.exists || snap.value == null) {
-        setState(() => _restoringSlot = false);
-        return;
-      }
-
-      final data = Map<dynamic, dynamic>.from(snap.value as Map);
-      final sectionKey = data['sectionKey'] as String?;
-      final slotId = data['slotId'] as String?;
-
-      if (sectionKey == null || slotId == null) {
-        setState(() => _restoringSlot = false);
-        return;
-      }
-
-      final section = _sections[sectionKey];
-      if (section == null) {
-        setState(() => _restoringSlot = false);
-        return;
-      }
-
-      setState(() {
-        _confirmedSlotId = slotId;
-        _confirmedSectionKey = sectionKey;
-        _confirmedSlotLabel = '${section.label} Parking — $slotId';
-        _restoringSlot = false;
-      });
-    } catch (e) {
-      debugPrint('Failed to restore reserved slot: $e');
-      if (mounted) setState(() => _restoringSlot = false);
-    }
-  }
-
-  // Layout-only data now — ids, pwd flags, and section/sub-area
-  // structure. Occupied/vacant status no longer comes from here at
-  // render time; see _effectiveOccupied(), which prefers live Firebase
-  // data and only falls back to isOccupied below if Firebase hasn't
-  // reported a status for that slot yet.
+  // TODO: Replace with a real-time Firebase stream (StreamBuilder)
+  // listening to /slots/{section}/{subArea} in your Realtime Database.
+  // Front splits into two sub-areas mirroring the real layout of
+  // Waltermart Mabalacat. Side and Back are placeholders until their
+  // physical layout is finalized.
   final Map<String, ParkingSection> _sections = {
     'front': ParkingSection(
       key: 'front',
@@ -252,48 +109,48 @@ class _ParkingMapBodyState extends State<ParkingMapBody> {
       subAreas: [
         ParkingSubArea(
           key: 'front_left',
-          label: 'Front — Left side parking',
+          label: 'Front \u2014 Left side parking',
           leftColumn: const [
-            ParkingSlot(id: 'F16', isOccupied: false),
-            ParkingSlot(id: 'F17', isOccupied: false),
+            ParkingSlot(id: 'F16', isOccupied: true),
+            ParkingSlot(id: 'F17', isOccupied: true),
             ParkingSlot(id: 'F18', isOccupied: false),
-            ParkingSlot(id: 'F19', isOccupied: false),
+            ParkingSlot(id: 'F19', isOccupied: true),
             ParkingSlot(id: 'F20', isOccupied: false),
-            ParkingSlot(id: 'F21', isOccupied: false),
+            ParkingSlot(id: 'F21', isOccupied: true),
             ParkingSlot(id: 'F22', isOccupied: false),
           ],
           rightColumn: const [
             ParkingSlot(id: 'F1', isOccupied: false),
-            ParkingSlot(id: 'F2', isOccupied: false),
+            ParkingSlot(id: 'F2', isOccupied: true),
             ParkingSlot(id: 'F3', isOccupied: false),
-            ParkingSlot(id: 'F4', isOccupied: false),
+            ParkingSlot(id: 'F4', isOccupied: true),
             ParkingSlot(id: 'F5', isOccupied: false),
-            ParkingSlot(id: 'F6', isOccupied: false),
-            ParkingSlot(id: 'F7', isOccupied: false),
-            ParkingSlot(id: 'F8', isOccupied: false),
+            ParkingSlot(id: 'F6', isOccupied: true),
+            ParkingSlot(id: 'F7', isOccupied: true),
+            ParkingSlot(id: 'F8', isOccupied: true),
             ParkingSlot(id: 'F9', isOccupied: false),
           ],
         ),
         ParkingSubArea(
           key: 'front_right',
-          label: 'Front — Right side parking',
+          label: 'Front \u2014 Right side parking',
           leftColumn: const [
-            ParkingSlot(id: 'F23', isOccupied: false),
-            ParkingSlot(id: 'F24', isOccupied: false),
-            ParkingSlot(id: 'F25', isOccupied: false),
+            ParkingSlot(id: 'F23', isOccupied: true),
+            ParkingSlot(id: 'F24', isOccupied: true),
+            ParkingSlot(id: 'F25', isOccupied: true),
             ParkingSlot(id: 'F26', isOccupied: false),
-            ParkingSlot(id: 'F27', isOccupied: false),
+            ParkingSlot(id: 'F27', isOccupied: true),
             ParkingSlot(id: 'F28', isOccupied: false),
-            ParkingSlot(id: 'F29', isOccupied: false),
+            ParkingSlot(id: 'F29', isOccupied: true),
             ParkingSlot(id: 'F30', isOccupied: false),
           ],
           rightColumn: const [
             ParkingSlot(id: 'F10', isOccupied: false, isPwd: true),
             ParkingSlot(id: 'F11', isOccupied: false, isPwd: true),
-            ParkingSlot(id: 'F12', isOccupied: false),
-            ParkingSlot(id: 'F13', isOccupied: false),
-            ParkingSlot(id: 'F14', isOccupied: false),
-            ParkingSlot(id: 'F15', isOccupied: false),
+            ParkingSlot(id: 'F12', isOccupied: true),
+            ParkingSlot(id: 'F13', isOccupied: true),
+            ParkingSlot(id: 'F14', isOccupied: true),
+            ParkingSlot(id: 'F15', isOccupied: true),
           ],
         ),
       ],
@@ -305,12 +162,12 @@ class _ParkingMapBodyState extends State<ParkingMapBody> {
         ParkingSubArea(
           key: 'side_main',
           label: 'Side parking',
-          // Straight single-line layout — no drive lane split.
+          // Straight single-line layout \u2014 no drive lane split.
           // All 60 slots in one column, S1 to S60, aligned right.
           leftColumn: const [],
           rightColumn: List.generate(
             60,
-            (i) => ParkingSlot(id: 'S${i + 1}', isOccupied: false),
+            (i) => ParkingSlot(id: 'S${i + 1}', isOccupied: i % 3 == 0),
           ),
         ),
       ],
@@ -322,292 +179,62 @@ class _ParkingMapBodyState extends State<ParkingMapBody> {
         ParkingSubArea(
           key: 'back_main',
           label: 'Back parking',
-          // 122 slots split evenly across the drive lane, B1–B61 on the
-          // left and B62–B122 on the right.
+          // 122 slots split evenly across the drive lane, B1\u2013B61 on the
+          // left and B62\u2013B122 on the right.
           leftColumn: List.generate(
             61,
-            (i) => ParkingSlot(id: 'B${i + 1}', isOccupied: false),
+            (i) => ParkingSlot(id: 'B${i + 1}', isOccupied: i % 2 == 0),
           ),
           rightColumn: List.generate(
             61,
-            (i) => ParkingSlot(id: 'B${i + 62}', isOccupied: false),
+            (i) => ParkingSlot(id: 'B${i + 62}', isOccupied: i % 2 == 0),
           ),
         ),
       ],
     ),
   };
 
+  String _selectedSubAreaKey = 'front_left';
+
   ParkingSection get _activeSection => _sections[_selectedSection]!;
+
+  ParkingSubArea get _activeSubArea => _activeSection.subAreas
+      .firstWhere((a) => a.key == _selectedSubAreaKey,
+          orElse: () => _activeSection.subAreas.first);
 
   void _selectSection(String key) {
     setState(() {
       _selectedSection = key;
-    });
-
-    // Scroll down to the live slot grid so tapping a zone card feels
-    // like "going to the slots" instead of just swapping content above.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final ctx = _gridSectionKey.currentContext;
-      if (ctx != null) {
-        Scrollable.ensureVisible(
-          ctx,
-          duration: const Duration(milliseconds: 400),
-          curve: Curves.easeInOut,
-          alignment: 0.05,
-        );
-      }
+      // Default to the first sub-area whenever the section changes.
+      _selectedSubAreaKey = _sections[key]!.subAreas.first.key;
     });
   }
 
-  /// Frees a single slot in Firebase — used only for the "leave with no
-  /// new slot involved" case (_handleLeaveSlotTap). Awaited and returns
-  /// whether the write actually succeeded so callers can roll the UI
-  /// back on failure instead of silently drifting out of sync.
-  Future<bool> _writeSlotFree({
-    required String sectionKey,
-    required String slotId,
-  }) async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Please sign in again.')),
-        );
-      }
-      return false;
-    }
-
-    final updates = <String, dynamic>{
-      'slots/$sectionKey/$slotId/sensor': 'vacant',
-      'slots/$sectionKey/$slotId/reservedBy': null,
-      'user_slots/$uid': null,
-    };
-
-    try {
-      await rtdb.ref().update(updates);
-      return true;
-    } catch (e) {
-      debugPrint('Failed to free slot $sectionKey/$slotId: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              "Couldn't sync with the server ($e). Check your connection and try again.",
-            ),
-          ),
-        );
-      }
-      return false;
-    }
-  }
-
-  /// Atomically frees [oldSlotId] (if any) and claims [newSlotId] for the
-  /// signed-in account in a SINGLE Firebase multi-path update.
-  ///
-  /// This is the fix for slots getting "stuck" occupied when switching:
-  /// the old version fired two independent, un-awaited writes — one to
-  /// vacate the old slot, one to claim the new one — with nothing
-  /// checking whether either actually succeeded. If the vacate write
-  /// failed or lagged for any reason (dropped connection, reordering),
-  /// the app moved on locally to show the new slot as confirmed while
-  /// the old slot silently stayed "occupied" in Firebase forever — which
-  /// is exactly what shows up as "stuck" on the web dashboard, since it
-  /// reads the same data. Bundling both halves into one update() call
-  /// means they either both land or neither does, and we now await the
-  /// result and roll the UI back if it fails instead of assuming success.
-  Future<bool> _writeSlotTransition({
-    required String newSectionKey,
-    required String newSlotId,
-    String? oldSectionKey,
-    String? oldSlotId,
-  }) async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Please sign in again.')),
-        );
-      }
-      return false;
-    }
-
-    final updates = <String, dynamic>{
-      'slots/$newSectionKey/$newSlotId/sensor': 'occupied',
-      'slots/$newSectionKey/$newSlotId/reservedBy': uid,
-      'user_slots/$uid': {'sectionKey': newSectionKey, 'slotId': newSlotId},
-    };
-
-    if (oldSectionKey != null && oldSlotId != null) {
-      updates['slots/$oldSectionKey/$oldSlotId/sensor'] = 'vacant';
-      updates['slots/$oldSectionKey/$oldSlotId/reservedBy'] = null;
-    }
-
-    // TEMP DEBUG — trace exactly what gets sent to Firebase and whether
-    // the write actually succeeds. Remove once the F1-stuck-occupied
-    // issue is confirmed fixed.
-    print('========== TRANSITION UPDATES ==========');
-    print('oldSectionKey: $oldSectionKey, oldSlotId: $oldSlotId');
-    print('newSectionKey: $newSectionKey, newSlotId: $newSlotId');
-    print(updates);
-
-    try {
-      await rtdb.ref().update(updates);
-      print('========== TRANSITION WRITE SUCCEEDED ==========');
-      return true;
-    } catch (e) {
-      print('========== TRANSITION WRITE FAILED: $e ==========');
-      debugPrint(
-          'Failed to write slot transition ($oldSectionKey/$oldSlotId -> $newSectionKey/$newSlotId): $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              "Couldn't sync with the server ($e). Check your connection and try again.",
-            ),
-          ),
-        );
-      }
-      return false;
-    }
-  }
-
-  void _handleSlotTap(ParkingSlot slot, String sectionLabel, String sectionKey) {
+  void _handleSlotTap(ParkingSlot slot, String sectionLabel) {
     // Occupied slots aren't tappable in the grid (see _ParkingGrid),
     // but guard here too in case this is ever called some other way.
-    // Uses live occupancy, not the static flag, so a slot someone else
-    // just took can't be tapped in the brief window before the grid
-    // rebuilds.
-    if (_effectiveOccupied(slot)) return;
-
-    // Already parked somewhere else? Make them confirm leaving that slot
-    // before we let them confirm a new one — prevents "double parking"
-    // in the data.
-    if (_confirmedSlotId != null && _confirmedSlotId != slot.id) {
-      _promptLeaveBeforeSwitching(
-        newSlot: slot,
-        newSectionLabel: sectionLabel,
-        newSectionKey: sectionKey,
-      );
-      return;
-    }
-
-    _showConfirmSlotDialog(slot, sectionLabel, sectionKey);
-  }
-
-  // Shown when the driver already has a confirmed slot and taps a
-  // *different* available slot. Asks them to confirm leaving the old
-  // slot first; only on confirmation do we free the old slot and chain
-  // straight into the normal "confirm this new slot" dialog.
-  void _promptLeaveBeforeSwitching({
-    required ParkingSlot newSlot,
-    required String newSectionLabel,
-    required String newSectionKey,
-  }) {
-    final oldSlotLabel = _confirmedSlotLabel ?? 'your current slot';
-    final oldSlotId = _confirmedSlotId!;
-    final oldSectionKey = _confirmedSectionKey!;
-
-    // TEMP DEBUG — confirm what we captured BEFORE local state gets
-    // cleared below, since that's the data _writeSlotTransition will
-    // eventually receive as oldSectionKey/oldSlotId.
-    print('========== PROMPT LEAVE BEFORE SWITCHING ==========');
-    print('oldSlotId: $oldSlotId, oldSectionKey: $oldSectionKey');
-
-    showDialog(
-      context: context,
-      barrierDismissible: true,
-      builder: (dialogContext) => _ParkingDialog(
-        headerTitle: 'LEAVING PARKING SLOT',
-        subtitleText: oldSlotLabel,
-        question:
-            "You're currently parked in $oldSlotLabel. Leave this slot to park in $newSectionLabel Parking — ${newSlot.id}?",
-        confirmLabel: "YES, I'M LEAVING",
-        confirmColor: AppColors.slotOccupied,
-        onClose: () => Navigator.of(dialogContext).pop(),
-        onConfirm: () {
-          Navigator.of(dialogContext).pop();
-          setState(() {
-            _confirmedSlotLabel = null;
-            _confirmedSlotId = null;
-            _confirmedSectionKey = null;
-          });
-
-          // Don't write to Firebase yet. Walk straight into confirming
-          // the new slot, carrying the old slot's info along — the
-          // actual free-old + claim-new write happens as a single
-          // atomic update once the new slot is confirmed too. See
-          // _writeSlotTransition for why this matters.
-          _showConfirmSlotDialog(
-            newSlot,
-            newSectionLabel,
-            newSectionKey,
-            previousSlotId: oldSlotId,
-            previousSectionKey: oldSectionKey,
-            previousSlotLabel: oldSlotLabel,
-          );
-        },
-      ),
-    );
-  }
-
-  void _showConfirmSlotDialog(
-    ParkingSlot slot,
-    String sectionLabel,
-    String sectionKey, {
-    String? previousSlotId,
-    String? previousSectionKey,
-    String? previousSlotLabel,
-  }) {
-    // TEMP DEBUG — confirm exactly what this dialog will pass into
-    // _writeSlotTransition as the "old" slot when it's confirmed.
-    print('========== SHOW CONFIRM SLOT DIALOG ==========');
-    print('newSlotId: ${slot.id}, newSectionKey: $sectionKey');
-    print('previousSlotId: $previousSlotId, previousSectionKey: $previousSectionKey');
+    if (slot.isOccupied) return;
 
     showDialog(
       context: context,
       barrierDismissible: true,
       builder: (dialogContext) => _ParkingDialog(
         headerTitle: 'PARKING SLOT CONFIRMATION',
-        subtitleText: '$sectionLabel Parking — ${slot.id}',
+        subtitleText: '$sectionLabel Parking \u2014 ${slot.id}',
         question: 'Are you currently parked in this slot?',
         confirmLabel: 'YES, I AM',
         confirmColor: AppColors.slotAvailable,
         onClose: () => Navigator.of(dialogContext).pop(),
-        onConfirm: () async {
+        onConfirm: () {
           // Cancel any pending thank-you auto-revert so it doesn't
           // stomp on the newly confirmed slot a few seconds from now.
           _thankYouTimer?.cancel();
-          final newLabel = '$sectionLabel Parking — ${slot.id}';
           setState(() {
-            _confirmedSlotLabel = newLabel;
+            _confirmedSlotLabel = '$sectionLabel Parking \u2014 ${slot.id}';
             _confirmedSlotId = slot.id;
-            _confirmedSectionKey = sectionKey;
             _showThankYouBanner = false;
           });
           Navigator.of(dialogContext).pop();
-
-          // One atomic write: claim the new slot, and — if this
-          // confirmation came from a switch — free the old one in the
-          // same call. See _writeSlotTransition for why these can't be
-          // two separate writes without risking a slot getting stuck.
-          final success = await _writeSlotTransition(
-            newSectionKey: sectionKey,
-            newSlotId: slot.id,
-            oldSectionKey: previousSectionKey,
-            oldSlotId: previousSlotId,
-          );
-
-          if (!success && mounted) {
-            // The write didn't actually land — don't leave the UI
-            // claiming a slot Firebase never recorded. Roll back to
-            // whatever was true before this confirmation.
-            setState(() {
-              _confirmedSlotId = previousSlotId;
-              _confirmedSectionKey = previousSectionKey;
-              _confirmedSlotLabel = previousSlotLabel;
-            });
-          }
         },
       ),
     );
@@ -616,49 +243,24 @@ class _ParkingMapBodyState extends State<ParkingMapBody> {
   // Tapping the user's own (highlighted, red) slot asks whether they're
   // leaving. Confirming frees the slot back to available/green and
   // switches the banner to a "thank you" message for a few seconds.
-  void _handleLeaveSlotTap(ParkingSlot slot, String sectionLabel, String sectionKey) {
+  void _handleLeaveSlotTap(ParkingSlot slot, String sectionLabel) {
     showDialog(
       context: context,
       barrierDismissible: true,
       builder: (dialogContext) => _ParkingDialog(
         headerTitle: 'LEAVING PARKING SLOT',
-        subtitleText: '$sectionLabel Parking — ${slot.id}',
+        subtitleText: '$sectionLabel Parking \u2014 ${slot.id}',
         question: 'Are you leaving this slot?',
         confirmLabel: "YES, I'M LEAVING",
         confirmColor: AppColors.slotOccupied,
         onClose: () => Navigator.of(dialogContext).pop(),
-        onConfirm: () async {
-          final previousLabel = _confirmedSlotLabel;
-          final previousId = _confirmedSlotId;
-          final previousSection = _confirmedSectionKey;
-
+        onConfirm: () {
           setState(() {
             _confirmedSlotLabel = null;
             _confirmedSlotId = null;
-            _confirmedSectionKey = null;
             _showThankYouBanner = true;
           });
           Navigator.of(dialogContext).pop();
-
-          // Free the slot up in Firebase so it goes back to vacant/green
-          // for everyone watching the live map, and clears this
-          // account's user_slots entry.
-          final success = await _writeSlotFree(
-            sectionKey: sectionKey,
-            slotId: slot.id,
-          );
-
-          if (!success && mounted) {
-            // Don't tell the driver they've left a slot Firebase still
-            // has marked as theirs.
-            setState(() {
-              _confirmedSlotLabel = previousLabel;
-              _confirmedSlotId = previousId;
-              _confirmedSectionKey = previousSection;
-              _showThankYouBanner = false;
-            });
-            return;
-          }
 
           _thankYouTimer?.cancel();
           _thankYouTimer = Timer(const Duration(seconds: 4), () {
@@ -672,9 +274,9 @@ class _ParkingMapBodyState extends State<ParkingMapBody> {
   @override
   Widget build(BuildContext context) {
     final section = _activeSection;
+    final subArea = _activeSubArea;
 
     return SingleChildScrollView(
-      controller: _scrollController,
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -689,7 +291,7 @@ class _ParkingMapBodyState extends State<ParkingMapBody> {
           ),
           const SizedBox(height: 2),
           const Text(
-            '212 stalls monitored • Live',
+            '212 stalls monitored \u2022 Live',
             style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
           ),
           const SizedBox(height: 16),
@@ -701,22 +303,6 @@ class _ParkingMapBodyState extends State<ParkingMapBody> {
           ),
           const SizedBox(height: 16),
 
-          // Compass-style overview mirroring the mall's real floor plan:
-          // Back along the top, Side along the right, Front along the
-          // bottom, with the store footprint in between. Each zone box
-          // renders one small colored rectangle per actual slot, using
-          // live Firebase occupancy. Tapping a zone reuses the same
-          // _selectSection flow as the cards below (select + auto-scroll
-          // to the live grid).
-          _ParkingCompassOverview(
-            sections: _sections,
-            selectedKey: _selectedSection,
-            confirmedSlotId: _confirmedSlotId,
-            liveOccupancy: _liveOccupancy,
-            onZoneTap: _selectSection,
-          ),
-          const SizedBox(height: 16),
-
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
@@ -724,55 +310,53 @@ class _ParkingMapBodyState extends State<ParkingMapBody> {
               borderRadius: BorderRadius.circular(16),
               border: Border.all(color: AppColors.border),
             ),
-            child: _StatsRow(
-              section: section,
-              confirmedSlotId: _confirmedSlotId,
-              liveOccupancy: _liveOccupancy,
+            child: Column(
+              children: [
+                _SectionTabs(
+                  sections: _sections.values.toList(),
+                  selectedKey: _selectedSection,
+                  onSelect: _selectSection,
+                ),
+                const SizedBox(height: 14),
+                _StatsRow(section: section, confirmedSlotId: _confirmedSlotId),
+              ],
             ),
           ),
           const SizedBox(height: 20),
 
-          Column(
-            key: _gridSectionKey,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '${section.label.toUpperCase()} PARKING — LIVE MAP',
-                style: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textPrimary,
-                  letterSpacing: 0.2,
-                ),
-              ),
-              const SizedBox(height: 10),
-              // Every sub-area for this section is shown stacked, one
-              // after another — no dropdown/tab selector. Scrolling down
-              // past one sub-area's grid reveals the next one's label
-              // and grid directly underneath.
-              for (int i = 0; i < section.subAreas.length; i++) ...[
-                if (i > 0) const SizedBox(height: 20),
-                Text(
-                  section.subAreas[i].label,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                _ParkingGrid(
-                  subArea: section.subAreas[i],
-                  sectionLabel: section.label,
-                  confirmedSlotId: _confirmedSlotId,
-                  liveOccupancy: _liveOccupancy,
-                  onSlotTap: (slot) =>
-                      _handleSlotTap(slot, section.label, section.key),
-                  onConfirmedSlotTap: (slot) =>
-                      _handleLeaveSlotTap(slot, section.label, section.key),
-                ),
-              ],
-            ],
+          Text(
+            '${section.label.toUpperCase()} PARKING \u2014 LIVE MAP',
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: AppColors.textPrimary,
+              letterSpacing: 0.2,
+            ),
+          ),
+          const SizedBox(height: 10),
+
+          if (section.subAreas.length > 1)
+            _SubAreaDropdown(
+              subAreas: section.subAreas,
+              selectedKey: _selectedSubAreaKey,
+              onSelect: (key) => setState(() => _selectedSubAreaKey = key),
+            )
+          else
+            _SubAreaDropdown(
+              subAreas: section.subAreas,
+              selectedKey: subArea.key,
+              onSelect: (_) {},
+              enabled: false,
+            ),
+          const SizedBox(height: 16),
+
+          _ParkingGrid(
+            subArea: subArea,
+            sectionLabel: section.label,
+            confirmedSlotId: _confirmedSlotId,
+            onSlotTap: (slot) => _handleSlotTap(slot, section.label),
+            onConfirmedSlotTap: (slot) =>
+                _handleLeaveSlotTap(slot, section.label),
           ),
 
           // Generate QR button intentionally removed from here.
@@ -807,7 +391,7 @@ class _SuggestedSlotBanner extends StatelessWidget {
     final Color accentColor;
     if (showThankYou) {
       eyebrow = 'THANK YOU';
-      message = 'Drive safe — come back soon!';
+      message = 'Drive safe \u2014 come back soon!';
       accentColor = AppColors.slotAvailable;
     } else if (isConfirmed) {
       eyebrow = 'CURRENT PARKING SLOT';
@@ -815,7 +399,7 @@ class _SuggestedSlotBanner extends StatelessWidget {
       accentColor = AppColors.primaryBlue;
     } else {
       eyebrow = 'SUGGESTED FOR YOU';
-      message = 'Front section — F1, F3, F5';
+      message = 'Front section \u2014 F1, F3, F5';
       accentColor = AppColors.primaryBlue;
     }
 
@@ -860,284 +444,80 @@ class _SuggestedSlotBanner extends StatelessWidget {
   }
 }
 
-/// Compass-style overview of the whole mall, laid out to mirror the real
-/// floor plan (Back along the top, Side along the right edge, Front
-/// along the bottom, store footprint in the middle). Each zone box shows
-/// one small colored rectangle per actual slot in that section — an
-/// exact, at-a-glance count rather than a simplified sample, driven by
-/// live Firebase occupancy. Tapping a zone box hands off to [onZoneTap],
-/// which reuses the existing select-and-scroll-to-grid behavior.
-class _ParkingCompassOverview extends StatelessWidget {
-  final Map<String, ParkingSection> sections;
+class _SectionTabs extends StatelessWidget {
+  final List<ParkingSection> sections;
   final String selectedKey;
-  final String? confirmedSlotId;
-  final Map<String, bool> liveOccupancy;
-  final ValueChanged<String> onZoneTap;
+  final ValueChanged<String> onSelect;
 
-  const _ParkingCompassOverview({
+  const _SectionTabs({
     required this.sections,
     required this.selectedKey,
-    required this.onZoneTap,
-    required this.liveOccupancy,
-    this.confirmedSlotId,
+    required this.onSelect,
   });
 
   @override
   Widget build(BuildContext context) {
-    final back = sections['back']!;
-    final front = sections['front']!;
-    final side = sections['side']!;
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: AppColors.cardBackground,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'MALL PARKING OVERVIEW',
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-              color: AppColors.textSecondary,
-              letterSpacing: 0.4,
-            ),
-          ),
-          const SizedBox(height: 12),
-
-          // Back — top edge of the floor plan.
-          _CompassZoneBox(
-            label: 'Back',
-            section: back,
-            isActive: selectedKey == 'back',
-            confirmedSlotId: confirmedSlotId,
-            liveOccupancy: liveOccupancy,
-            onTap: () => onZoneTap('back'),
-          ),
-          const SizedBox(height: 8),
-
-          // Store footprint (decorative, non-interactive) + Side — right
-          // edge of the floor plan, matching the driveway-then-side-lot
-          // arrangement in the actual mall.
-          IntrinsicHeight(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Expanded(
-                  child: Container(
-                    padding: const EdgeInsets.all(12),
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: AppColors.background,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: AppColors.border),
-                    ),
-                    child: const Text(
-                      'WALTERMART MALL',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.textTertiary,
-                        letterSpacing: 0.8,
-                      ),
-                    ),
+    return Row(
+      children: sections.map((s) {
+        final isActive = s.key == selectedKey;
+        return Expanded(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: GestureDetector(
+              onTap: () => onSelect(s.key),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                decoration: BoxDecoration(
+                  color: isActive
+                      ? AppColors.primaryBlue
+                      : AppColors.cardBackground,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: isActive ? AppColors.primaryBlue : AppColors.border,
                   ),
                 ),
-                const SizedBox(width: 8),
-                SizedBox(
-                  width: 90,
-                  child: _CompassZoneBox(
-                    label: 'Side',
-                    section: side,
-                    isActive: selectedKey == 'side',
-                    confirmedSlotId: confirmedSlotId,
-                    liveOccupancy: liveOccupancy,
-                    onTap: () => onZoneTap('side'),
-                    verticalLine: true,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-
-          // Front — bottom edge of the floor plan.
-          _CompassZoneBox(
-            label: 'Front',
-            section: front,
-            isActive: selectedKey == 'front',
-            confirmedSlotId: confirmedSlotId,
-            liveOccupancy: liveOccupancy,
-            onTap: () => onZoneTap('front'),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// One tappable zone box within the compass overview. Renders a header
-/// (label + available/total) and a wrapped grid of small rectangles —
-/// one per slot in [section] — colored green/red for available/occupied,
-/// based on live Firebase occupancy (falling back to the static demo
-/// flag only for slots Firebase hasn't reported on yet).
-class _CompassZoneBox extends StatelessWidget {
-  final String label;
-  final ParkingSection section;
-  final bool isActive;
-  final String? confirmedSlotId;
-  final Map<String, bool> liveOccupancy;
-  final VoidCallback onTap;
-  // When true, renders occupancy as one continuous vertical line of
-  // stacked segments instead of a wrapped grid of dots — used for
-  // sections that are physically a single row of slots (e.g. Side),
-  // so the overview mirrors the real layout.
-  final bool verticalLine;
-
-  const _CompassZoneBox({
-    required this.label,
-    required this.section,
-    required this.isActive,
-    required this.onTap,
-    required this.liveOccupancy,
-    this.confirmedSlotId,
-    this.verticalLine = false,
-  });
-
-  bool _isOccupied(ParkingSlot s) {
-    if (s.id == confirmedSlotId) return true;
-    return liveOccupancy[s.id] ?? s.isOccupied;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final slots = section.slots;
-    final occupiedCount = slots.where(_isOccupied).length;
-    final available = section.total - occupiedCount;
-
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(
-          color: isActive
-              ? AppColors.primaryBlue.withValues(alpha: 0.06)
-              : AppColors.background,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: isActive ? AppColors.primaryBlue : AppColors.border,
-            width: isActive ? 1.5 : 1,
-          ),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  label.toUpperCase(),
+                alignment: Alignment.center,
+                child: Text(
+                  '${s.label} (${s.total})',
                   style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.4,
-                    color: isActive
-                        ? AppColors.primaryBlue
-                        : AppColors.textPrimary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: isActive ? Colors.white : AppColors.textSecondary,
                   ),
                 ),
-                Text(
-                  '$available/${section.total}',
-                  style: const TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-              ],
+              ),
             ),
-            const SizedBox(height: 6),
-            verticalLine
-                ? Align(
-                    alignment: Alignment.centerLeft,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: slots
-                          .map((s) {
-                            final occupied = _isOccupied(s);
-                            return Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 1),
-                              child: Container(
-                                width: 6,
-                                height: 6,
-                                decoration: BoxDecoration(
-                                  color: occupied
-                                      ? AppColors.slotOccupied
-                                      : AppColors.slotAvailable,
-                                  borderRadius: BorderRadius.circular(1),
-                                ),
-                              ),
-                            );
-                          })
-                          .toList(),
-                    ),
-                  )
-                : Wrap(
-                    spacing: 2,
-                    runSpacing: 2,
-                    children: slots
-                        .map((s) {
-                          final occupied = _isOccupied(s);
-                          return Container(
-                            width: 6,
-                            height: 6,
-                            decoration: BoxDecoration(
-                              color: occupied
-                                  ? AppColors.slotOccupied
-                                  : AppColors.slotAvailable,
-                              borderRadius: BorderRadius.circular(1),
-                            ),
-                          );
-                        })
-                        .toList(),
-                  ),
-          ],
-        ),
-      ),
+          ),
+        );
+      }).toList(),
     );
   }
 }
 
 class _StatsRow extends StatelessWidget {
   final ParkingSection section;
+  // Passed in purely so the "Open"/"Taken" counts stay accurate once a
+  // slot has been confirmed \u2014 the underlying isOccupied flag on that
+  // ParkingSlot won't have flipped (it's still static/demo data), so we
+  // adjust the displayed counts by one when the confirmed slot lives in
+  // this section.
   final String? confirmedSlotId;
-  // Live Firebase occupancy — used so Total/Available/Unavailable reflect
-  // what's actually in the database instead of the static demo data
-  // (which marks every slot as available).
-  final Map<String, bool> liveOccupancy;
-  const _StatsRow({
-    required this.section,
-    required this.liveOccupancy,
-    this.confirmedSlotId,
-  });
+  const _StatsRow({required this.section, this.confirmedSlotId});
 
-  bool _isOccupied(ParkingSlot s) {
-    if (s.id == confirmedSlotId) return true;
-    return liveOccupancy[s.id] ?? s.isOccupied;
+  bool get _confirmedIsInSection {
+    if (confirmedSlotId == null) return false;
+    return section.subAreas.any((a) =>
+        a.leftColumn.any((s) => s.id == confirmedSlotId) ||
+        a.rightColumn.any((s) => s.id == confirmedSlotId));
   }
 
   @override
   Widget build(BuildContext context) {
-    final allSlots = section.subAreas
-        .expand((a) => [...a.leftColumn, ...a.rightColumn]);
-    final occupied = allSlots.where(_isOccupied).length;
-    final available = section.total - occupied;
+    // If the confirmed slot was originally "available" in this section's
+    // static data, nudge the counts so Open/Taken reflect reality.
+    final bumpTaken = _confirmedIsInSection;
+    final available = bumpTaken ? section.available - 1 : section.available;
+    final occupied = bumpTaken ? section.occupied + 1 : section.occupied;
 
     return Row(
       children: [
@@ -1220,21 +600,70 @@ class _LegendDot extends StatelessWidget {
   }
 }
 
+/// Dropdown for selecting which sub-area's live map to display
+/// (e.g. "Front \u2014 Left side parking" vs "Front \u2014 Right side parking").
+class _SubAreaDropdown extends StatelessWidget {
+  final List<ParkingSubArea> subAreas;
+  final String selectedKey;
+  final ValueChanged<String> onSelect;
+  final bool enabled;
+
+  const _SubAreaDropdown({
+    required this.subAreas,
+    required this.selectedKey,
+    required this.onSelect,
+    this.enabled = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+      decoration: BoxDecoration(
+        color: AppColors.cardBackground,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: selectedKey,
+          isExpanded: true,
+          icon: const Icon(Icons.keyboard_arrow_down, color: AppColors.textSecondary),
+          style: const TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w500,
+            color: AppColors.textPrimary,
+          ),
+          items: subAreas
+              .map((area) => DropdownMenuItem(
+                    value: area.key,
+                    child: Text(area.label),
+                  ))
+              .toList(),
+          onChanged: enabled
+              ? (key) {
+                  if (key != null) onSelect(key);
+                }
+              : null,
+        ),
+      ),
+    );
+  }
+}
+
 /// Renders a sub-area's slots as two columns split by a dashed drive lane,
 /// matching the physical layout of the parking area. Available slots are
-/// tappable; occupied slots are not (nothing to confirm there). Occupied
-/// status comes from live Firebase data via [liveOccupancy], falling back
-/// to the slot's static isOccupied flag only if Firebase hasn't reported
-/// on that slot yet.
+/// tappable; occupied slots are not (nothing to confirm there).
 ///
 /// [confirmedSlotId], if set, forces that one tile to render as occupied
 /// (red) and wraps it in a highlighted ring so the driver can spot their
-/// own slot at a glance.
+/// own slot at a glance, even though the underlying demo/Firebase data
+/// for that slot hasn't actually flipped to occupied yet.
 class _ParkingGrid extends StatelessWidget {
   final ParkingSubArea subArea;
   final String sectionLabel;
   final String? confirmedSlotId;
-  final Map<String, bool> liveOccupancy;
   final void Function(ParkingSlot slot) onSlotTap;
   final void Function(ParkingSlot slot) onConfirmedSlotTap;
 
@@ -1243,18 +672,17 @@ class _ParkingGrid extends StatelessWidget {
     required this.sectionLabel,
     required this.onSlotTap,
     required this.onConfirmedSlotTap,
-    required this.liveOccupancy,
     this.confirmedSlotId,
   });
 
   Widget _buildTile(ParkingSlot slot) {
-    print("${slot.id} -> ${liveOccupancy[slot.id]}");
     final isConfirmed = confirmedSlotId != null && slot.id == confirmedSlotId;
-    final isOccupied =
-        isConfirmed || (liveOccupancy[slot.id] ?? slot.isOccupied);
 
-    final effectiveSlot =
-        ParkingSlot(id: slot.id, isOccupied: isOccupied, isPwd: slot.isPwd);
+    // Force the confirmed slot to render as occupied (red), regardless of
+    // what its static isOccupied flag says.
+    final effectiveSlot = isConfirmed
+        ? ParkingSlot(id: slot.id, isOccupied: true, isPwd: slot.isPwd)
+        : slot;
 
     Widget tile = ParkingStallTile(slot: effectiveSlot);
 
@@ -1271,7 +699,7 @@ class _ParkingGrid extends StatelessWidget {
 
     // Other occupied slots stay non-tappable; only available slots open
     // the park-confirmation dialog.
-    if (isOccupied) return tile;
+    if (effectiveSlot.isOccupied) return tile;
 
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
@@ -1282,12 +710,6 @@ class _ParkingGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Side-style sub-areas are laid out as a single line of slots against
-    // the mall wall, with the driveway running alongside — not split
-    // across a center drive lane like Front/Back. Detected by an empty
-    // leftColumn, which is how the single-line sub-areas are defined.
-    final isLinear = subArea.leftColumn.isEmpty && subArea.rightColumn.isNotEmpty;
-
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
       decoration: BoxDecoration(
@@ -1303,142 +725,32 @@ class _ParkingGrid extends StatelessWidget {
             child: _LegendRow(),
           ),
           const SizedBox(height: 12),
-          if (isLinear)
-            IntrinsicHeight(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const _MallWallBar(label: 'WALTERMART MALL'),
-                  Expanded(
-                    child: Center(
-                      child: SizedBox(
-                        width: 160,
-                        child: Column(
-                          children: subArea.rightColumn
-                              .map((slot) => Padding(
-                                    padding: const EdgeInsets.symmetric(
-                                        vertical: 4),
-                                    child: _buildTile(slot),
-                                  ))
-                              .toList(),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 20),
-                  const _DrivewayLane(label: 'DRIVEWAY'),
-                ],
-              ),
-            )
-          else
-            IntrinsicHeight(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Expanded(
-                    child: Column(
-                      children: subArea.leftColumn
-                          .map((slot) => Padding(
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 4),
-                                child: _buildTile(slot),
-                              ))
-                          .toList(),
-                    ),
-                  ),
-                  const _DriveLane(),
-                  Expanded(
-                    child: Column(
-                      children: subArea.rightColumn
-                          .map((slot) => Padding(
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 4),
-                                child: _buildTile(slot),
-                              ))
-                          .toList(),
-                    ),
-                  ),
-                  // Front backs directly onto the mall, so it gets the
-                  // same wall bar as the linear (Side) layout — pinned
-                  // to the right edge here since Front's rightColumn is
-                  // the side closest to the building.
-                  if (sectionLabel == 'Front') ...[
-                    const SizedBox(width: 10),
-                    const _MallWallBar(label: 'WALTERMART MALL'),
-                  ],
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Vertical wall bar shown alongside a single-line sub-area's slots
-/// (e.g. Side parking), labeling the mall building the slots back onto.
-class _MallWallBar extends StatelessWidget {
-  final String label;
-  const _MallWallBar({required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 65,
-      decoration: BoxDecoration(
-        color: AppColors.background,
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: AppColors.border),
-      ),
-      alignment: Alignment.center,
-      child: RotatedBox(
-        quarterTurns: 3,
-        child: Text(
-          label,
-          style: const TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w700,
-            color: AppColors.textTertiary,
-            letterSpacing: 1.0,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Vertical dashed lane shown alongside a single-line sub-area's slots
-/// (e.g. Side parking), labeling where cars actually drive past the
-/// slots — distinct from the mall wall on the opposite side.
-class _DrivewayLane extends StatelessWidget {
-  final String label;
-  const _DrivewayLane({required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 80,
-      child: Stack(
-        alignment: Alignment.center,
-        fit: StackFit.expand,
-        children: [
-          const _DashedVerticalLine(),
-          Center(
-            child: RotatedBox(
-              quarterTurns: 3,
-              child: Container(
-                color: AppColors.cardBackground,
-                padding: const EdgeInsets.symmetric(horizontal: 6),
-                child: Text(
-                  label,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textTertiary,
-                    letterSpacing: 1.0,
+          IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  child: Column(
+                    children: subArea.leftColumn
+                        .map((slot) => Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: _buildTile(slot),
+                            ))
+                        .toList(),
                   ),
                 ),
-              ),
+                const _DriveLane(),
+                Expanded(
+                  child: Column(
+                    children: subArea.rightColumn
+                        .map((slot) => Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: _buildTile(slot),
+                            ))
+                        .toList(),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -1464,7 +776,7 @@ class _ConfirmedSlotHighlight extends StatelessWidget {
             border: Border.all(color: AppColors.primaryBlue, width: 2),
             boxShadow: [
               BoxShadow(
-                color: AppColors.primaryBlue.withValues(alpha: 0.35),
+                color: AppColors.primaryBlue.withOpacity(0.35),
                 blurRadius: 8,
                 spreadRadius: 1,
               ),
@@ -1506,7 +818,7 @@ class _DriveLane extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 75,
+      width: 28,
       margin: const EdgeInsets.symmetric(horizontal: 6),
       child: const _DashedVerticalLine(),
     );
@@ -1652,7 +964,7 @@ class _ParkingDialog extends StatelessWidget {
                           ),
                         ),
                       ),
-                      const SizedBox(width: 10),
+                      const SizedBox(width: 12),
                       Expanded(
                         child: ElevatedButton(
                           onPressed: onConfirm,
@@ -1681,4 +993,4 @@ class _ParkingDialog extends StatelessWidget {
       ),
     );
   }
-} 
+}

@@ -54,7 +54,7 @@ class ParkingSection {
   const ParkingSection({
     required this.key,
     required this.label,
-    required this.subAreas,
+    required this.subAreas,a
   });
 
   List<ParkingSlot> get slots =>

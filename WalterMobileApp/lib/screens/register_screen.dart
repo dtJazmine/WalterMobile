@@ -20,6 +20,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _passwordController = TextEditingController();
   final _confirmController = TextEditingController();
   final _pinController = TextEditingController();     // ← new
+  bool _isPwd = false;   // ← new: is this account registered as PWD?
   bool _isLoading = false;
 
   void _showToast(String msg, {Color backgroundColor = Colors.redAccent}) {
@@ -91,6 +92,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         'plateNumber': _plateController.text.trim().toUpperCase(),
         'phoneNumber': phone,
         'pin': _pinController.text.trim(),             // ← new
+        'isPwd': _isPwd,                                // ← new
         'createdAt': FieldValue.serverTimestamp(),
       });
 
@@ -214,7 +216,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       },
                     ),
                     const SizedBox(height: 18),
-                    // ── new PIN field ──
+                    // ── PIN field ──
                     _buildTextField(
                       controller: _pinController,
                       label: '4-Digit Recovery PIN',
@@ -244,6 +246,39 @@ class _RegisterScreenState extends State<RegisterScreen> {
                             fontSize: 12,
                             color: Color(0xFF0D4A91),
                           ),
+                        ),
+                      ),
+                    ),
+                    // ────────────────────
+                    const SizedBox(height: 18),
+                    // ── PWD registration checkbox ──
+                    // Registering as PWD marks the account so the
+                    // parking map shows/uses PWD-reserved slots for it
+                    // automatically. See ParkingMapBody._isAccountPwd.
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                            color: const Color(0xFF0D4A91), width: 2),
+                      ),
+                      child: CheckboxListTile(
+                        value: _isPwd,
+                        onChanged: (value) =>
+                            setState(() => _isPwd = value ?? false),
+                        controlAffinity: ListTileControlAffinity.leading,
+                        activeColor: const Color(0xFF0D4A91),
+                        title: const Text(
+                          'I am a Person With Disability (PWD)',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                            color: Color(0xFF0D4A91),
+                          ),
+                        ),
+                        subtitle: const Text(
+                          'Registering as PWD lets you view and use PWD-reserved parking slots.',
+                          style: TextStyle(fontSize: 11, color: Color(0xFF6D6D83)),
                         ),
                       ),
                     ),
