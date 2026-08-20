@@ -3,7 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'menu_drawer.dart';
 import 'parking_map_screen.dart';
-import 'qr_generation_screen.dart'; // for the shared FloatingQrButton
+import 'qr_generation_screen.dart' show QrGenerationScreen, FloatingQrButton;
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -15,7 +15,7 @@ class HomeScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: const Color(0xFF0D4A91),
-        // No title \u2014 the hamburger (from `drawer` below) still shows
+        // No title — the hamburger (from `drawer` below) still shows
         // automatically on the left via automaticallyImplyLeading.
         actions: [
           Padding(
@@ -58,7 +58,7 @@ class HomeScreen extends StatelessWidget {
       ),
       drawer: const MenuDrawer(activeItem: 'home'),
       body: const SafeArea(child: ParkingMapBody()),
-      // Pinned outside the scrollable ParkingMapBody \u2014 stays fixed
+      // Pinned outside the scrollable ParkingMapBody — stays fixed
       // at the bottom of the screen no matter how far the parking map
       // content above is scrolled.
       bottomNavigationBar: SafeArea(
@@ -68,7 +68,7 @@ class HomeScreen extends StatelessWidget {
           onPressed: () {
             final uid = FirebaseAuth.instance.currentUser?.uid;
             if (uid == null) {
-              // Not signed in \u2014 shouldn't normally happen if this
+              // Not signed in — shouldn't normally happen if this
               // screen is behind auth, but guard anyway.
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(content: Text('Please sign in again.')),
@@ -80,7 +80,7 @@ class HomeScreen extends StatelessWidget {
                 builder: (_) => QrGenerationScreen(accountId: uid),
               ),
             );
-          },
+          },  
         ),
       ),
     );

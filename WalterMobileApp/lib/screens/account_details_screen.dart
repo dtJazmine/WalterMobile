@@ -16,8 +16,6 @@ class AccountDetailsScreen extends StatefulWidget {
 }
 
 class _AccountDetailsScreenState extends State<AccountDetailsScreen> {
-  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
-
   Stream<DocumentSnapshot<Map<String, dynamic>>>? getUserStream() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return null;
@@ -40,9 +38,42 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> {
     final userStream = getUserStream();
 
     return Scaffold(
-      key: _scaffoldKey,
-      drawerEnableOpenDragGesture: true,
       backgroundColor: const Color(0xFFF5F7FB),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0D4A91),
+        // No title — the hamburger (from `drawer` below) still shows
+        // automatically on the left via automaticallyImplyLeading.
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 16),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                  stream: userStream,
+                  builder: (context, snapshot) {
+                    final userData = snapshot.data?.data() ?? {};
+                    return Text(
+                      "Hello, ${userData['name'] ?? ''}",
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14,
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(width: 10),
+                const CircleAvatar(
+                  radius: 16,
+                  backgroundColor: Colors.white,
+                  child: Icon(Icons.person, color: Color(0xFF0D4A91), size: 20),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
       drawer: const MenuDrawer(activeItem: 'settings'),
       drawerScrimColor: const Color(0x33000000),
       body: SafeArea(
@@ -51,8 +82,6 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _buildTopBar(context, userStream),
-              const SizedBox(height: 24),
               const Text(
                 'Account Details',
                 style: TextStyle(
@@ -145,50 +174,6 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> {
           ),
         ),
       ),
-    );
-  }
-
-  Widget _buildTopBar(BuildContext context, Stream<DocumentSnapshot<Map<String, dynamic>>>? userStream) {
-    return Row(
-      children: [
-        IconButton(
-          icon: const Icon(Icons.menu, color: Color(0xFF0D4A91)),
-          onPressed: () {
-            _scaffoldKey.currentState?.openDrawer();
-          },
-        ),
-        const Spacer(),
-        StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-          stream: userStream,
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Text("Loading...");
-            }
-            if (!snapshot.hasData || !snapshot.data!.exists) {
-              return const Text("No user");
-            }
-            final userData = snapshot.data!.data()!;
-            return Text(
-              "Hello, ${userData['name'] ?? ''}",
-              style: const TextStyle(
-                color: Color(0xFF1F2A37),
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-              ),
-            );
-          },
-        ),
-        const SizedBox(width: 12),
-        Container(
-          width: 40,
-          height: 40,
-          decoration: const BoxDecoration(
-            color: Color(0xFF0D4A91),
-            shape: BoxShape.circle,
-          ),
-          child: const Icon(Icons.person, color: Colors.white),
-        ),
-      ],
     );
   }
 

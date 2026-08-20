@@ -19,6 +19,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _phoneController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _isLoading = false;   // ← new
+  bool _obscurePassword = true; // ← new: password hidden by default
 
   void _showSnack(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -141,7 +142,21 @@ class _LoginScreenState extends State<LoginScreen> {
                     _buildTextField(
                       controller: _passwordController,
                       label: 'Password',
-                      obscureText: true,
+                      obscureText: _obscurePassword,
+                      // ── eye icon toggle: hidden by default ──
+                      suffixIcon: IconButton(
+                        icon: Icon(
+                          _obscurePassword
+                              ? Icons.visibility_off
+                              : Icons.visibility,
+                          color: const Color(0xFF6D6D83),
+                        ),
+                        onPressed: () {
+                          setState(() {
+                            _obscurePassword = !_obscurePassword;
+                          });
+                        },
+                      ),
                       validator: (value) {
                         if (value == null || value.isEmpty) {
                           return 'Password is required';
@@ -203,6 +218,7 @@ class _LoginScreenState extends State<LoginScreen> {
     required String label,
     TextInputType keyboardType = TextInputType.text,
     bool obscureText = false,
+    Widget? suffixIcon, // ← new
     List<TextInputFormatter>? inputFormatters,
     String? Function(String?)? validator,
   }) {
@@ -217,6 +233,7 @@ class _LoginScreenState extends State<LoginScreen> {
             obscureText ? const Color(0xFFEFEFFF) : Colors.white,
         hintText: label,
         hintStyle: const TextStyle(color: Color(0xFF6D6D83)),
+        suffixIcon: suffixIcon, // ← new
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 20,
           vertical: 20,
